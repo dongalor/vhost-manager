@@ -14,8 +14,11 @@ var removeCmd = &cobra.Command{
 	Use:   "remove <domain>",
 	Short: "Remove a virtual host",
 	Long: `Remove a virtual host for the specified domain.
-This will remove the symlink from sites-enabled and optionally
-delete the configuration file from sites-available.`,
+This will remove both the symlink from sites-enabled and the
+configuration file from sites-available.
+
+Use 'disable' command if you only want to deactivate the virtual host
+without deleting the configuration file.`,
 	Args: cobra.ExactArgs(1),
 	RunE: runRemove,
 }
@@ -24,14 +27,12 @@ func init() {
 	rootCmd.AddCommand(removeCmd)
 
 	// Add specific flags for the remove command
-	removeCmd.Flags().Bool("delete-config", false, "also delete the configuration file from sites-available")
-	removeCmd.Flags().Bool("force", false, "force removal without confirmation")
+	removeCmd.Flags().BoolP("yes", "y", false, "skip confirmation prompt")
 }
 
 func runRemove(cmd *cobra.Command, args []string) error {
 	domain := args[0]
-	deleteConfig, _ := cmd.Flags().GetBool("delete-config")
-	force, _ := cmd.Flags().GetBool("force")
+	skipConfirmation, _ := cmd.Flags().GetBool("yes")
 	dryRun := viper.GetBool("dry-run")
 	nginxPath := viper.GetString("nginx.path")
 
@@ -49,16 +50,15 @@ func runRemove(cmd *cobra.Command, args []string) error {
 
 	if dryRun {
 		fmt.Printf("DRY RUN: Would remove virtual host for domain '%s'\n", domain)
-		if deleteConfig {
-			fmt.Printf("  Would delete configuration file: %s\n", filepath.Join(nginxPath, "sites-available", domain))
-		}
+		fmt.Printf("  Would delete configuration file: %s\n", filepath.Join(nginxPath, "sites-available", domain))
 		fmt.Printf("  Would remove symlink: %s\n", filepath.Join(nginxPath, "sites-enabled", domain))
 		return nil
 	}
 
-	// Confirm removal unless forced
-	if !force {
-		fmt.Printf("Are you sure you want to remove virtual host for domain '%s'? (y/N): ", domain)
+	// Confirm removal unless skipped with -y flag
+	if !skipConfirmation {
+		fmt.Printf("This will permanently delete the virtual host for domain '%s'\n", domain)
+		fmt.Printf("Are you sure? (y/N): ")
 		var response string
 		fmt.Scanln(&response)
 		if response != "y" && response != "Y" && response != "yes" {
@@ -67,15 +67,13 @@ func runRemove(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Remove the virtual host
-	if err := manager.RemoveVirtualHost(domain, deleteConfig); err != nil {
+	// Remove the virtual host (always delete both symlink and config)
+	if err := manager.RemoveVirtualHost(domain, true); err != nil {
 		return fmt.Errorf("failed to remove virtual host: %w", err)
 	}
 
 	fmt.Printf("Successfully removed virtual host for domain '%s'\n", domain)
-	if deleteConfig {
-		fmt.Printf("Configuration file deleted: %s\n", filepath.Join(nginxPath, "sites-available", domain))
-	}
+	fmt.Printf("Configuration file deleted: %s\n", filepath.Join(nginxPath, "sites-available", domain))
 	fmt.Printf("Symlink removed: %s\n", filepath.Join(nginxPath, "sites-enabled", domain))
 
 	// Test nginx configuration

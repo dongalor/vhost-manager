@@ -156,6 +156,46 @@ func (m *Manager) TestConfiguration() error {
 	return nil
 }
 
+// IsVirtualHostEnabled checks if a virtual host is enabled (symlink exists in sites-enabled)
+func (m *Manager) IsVirtualHostEnabled(domain string) (bool, error) {
+	symlinkPath := filepath.Join(m.nginxPath, "sites-enabled", domain)
+	_, err := os.Lstat(symlinkPath)
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
+}
+
+// EnableVirtualHost creates a symlink in sites-enabled for an existing config
+func (m *Manager) EnableVirtualHost(domain string) error {
+	// Create sites-enabled directory if it doesn't exist
+	sitesEnabledDir := filepath.Join(m.nginxPath, "sites-enabled")
+	if err := os.MkdirAll(sitesEnabledDir, 0755); err != nil {
+		return fmt.Errorf("failed to create sites-enabled directory: %w", err)
+	}
+
+	// Create symlink in sites-enabled
+	configPath := filepath.Join(m.nginxPath, "sites-available", domain)
+	symlinkPath := filepath.Join(sitesEnabledDir, domain)
+	if err := os.Symlink(configPath, symlinkPath); err != nil {
+		return fmt.Errorf("failed to create symlink: %w", err)
+	}
+
+	return nil
+}
+
+// DisableVirtualHost removes the symlink from sites-enabled
+func (m *Manager) DisableVirtualHost(domain string) error {
+	symlinkPath := filepath.Join(m.nginxPath, "sites-enabled", domain)
+	if err := os.Remove(symlinkPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove symlink: %w", err)
+	}
+	return nil
+}
+
 // generateConfig generates nginx configuration content
 func (m *Manager) generateConfig(config VirtualHostConfig) (string, error) {
 	tmpl := getTemplate(config.Template)
