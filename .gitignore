@@ -5,6 +5,9 @@
 *.so
 *.dylib
 
+# Built binary
+vhost-manager
+
 # Test binary, built with `go test -c`
 *.test
 
