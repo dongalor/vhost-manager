@@ -222,7 +222,90 @@ func getTemplate(templateName string) string {
 		return redirectHTTPSTemplate
 	case "basic":
 		return basicTemplate
+	case "ssl":
+		return sslTemplate
 	default:
 		return defaultTemplate
 	}
+}
+
+// ReloadNginx reloads the nginx service
+func (m *Manager) ReloadNginx() error {
+	cmd := exec.Command("nginx", "-s", "reload")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to reload nginx: %s", string(output))
+	}
+	return nil
+}
+
+// EnableSSL updates a virtual host configuration to use SSL
+func (m *Manager) EnableSSL(domain string) error {
+	// Check if virtual host exists
+	exists, err := m.VirtualHostExists(domain)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("virtual host %s does not exist", domain)
+	}
+
+	// Read the current configuration to extract settings
+	configPath := filepath.Join(m.nginxPath, "sites-available", domain)
+	currentConfig, err := os.ReadFile(configPath)
+	if err != nil {
+		return fmt.Errorf("failed to read current configuration: %w", err)
+	}
+
+	// Check if already using SSL template
+	if strings.Contains(string(currentConfig), "listen 443 ssl") {
+		return fmt.Errorf("SSL already enabled for %s", domain)
+	}
+
+	// Extract document root from current config (simple heuristic)
+	documentRoot := fmt.Sprintf("/var/www/%s", domain)
+	lines := strings.Split(string(currentConfig), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "root ") {
+			documentRoot = strings.TrimSuffix(strings.TrimPrefix(line, "root "), ";")
+			documentRoot = strings.TrimSpace(documentRoot)
+			break
+		}
+	}
+
+	// Create new config with SSL template
+	config := VirtualHostConfig{
+		Domain:       domain,
+		ServerName:   domain,
+		DocumentRoot: documentRoot,
+		Port:         80,
+		Template:     "ssl",
+	}
+
+	// Backup the original configuration
+	backupPath := configPath + ".backup"
+	if err := os.WriteFile(backupPath, currentConfig, 0644); err != nil {
+		return fmt.Errorf("failed to backup configuration: %w", err)
+	}
+
+	// Generate new SSL configuration
+	newConfig, err := m.generateConfig(config)
+	if err != nil {
+		return fmt.Errorf("failed to generate SSL configuration: %w", err)
+	}
+
+	// Write new configuration
+	if err := os.WriteFile(configPath, []byte(newConfig), 0644); err != nil {
+		// Restore backup on failure
+		os.WriteFile(configPath, currentConfig, 0644)
+		return fmt.Errorf("failed to write SSL configuration: %w", err)
+	}
+
+	return nil
+}
+
+// GetConfigPath returns the path to the configuration file for a domain
+func (m *Manager) GetConfigPath(domain string) string {
+	return filepath.Join(m.nginxPath, "sites-available", domain)
 }

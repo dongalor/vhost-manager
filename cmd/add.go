@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/dongalor/vhost-manager/internal/certbot"
 	"github.com/dongalor/vhost-manager/internal/nginx"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -30,6 +31,9 @@ func init() {
 	addCmd.Flags().String("server-name", "", "server name (default: <domain>)")
 	addCmd.Flags().Bool("redirect-https", true, "redirect HTTP to HTTPS")
 	addCmd.Flags().String("template", "default", "nginx template to use")
+	addCmd.Flags().Bool("cert", false, "install SSL certificate with certbot after creating vhost")
+	addCmd.Flags().String("email", "", "email address for Let's Encrypt notifications (used with --cert)")
+	addCmd.Flags().Bool("staging", false, "use Let's Encrypt staging environment (used with --cert)")
 }
 
 func runAdd(cmd *cobra.Command, args []string) error {
@@ -98,14 +102,79 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Configuration file: %s\n", filepath.Join(nginxPath, "sites-available", domain))
 	fmt.Printf("Symlink created: %s\n", filepath.Join(nginxPath, "sites-enabled", domain))
 	fmt.Printf("Document root: %s\n", documentRoot)
-	
+
 	// Test nginx configuration
 	if err := manager.TestConfiguration(); err != nil {
 		fmt.Printf("Warning: nginx configuration test failed: %v\n", err)
 		fmt.Println("Please check the configuration and run 'nginx -t' manually")
+		return nil
+	}
+
+	fmt.Println("nginx configuration test passed")
+
+	// Check if SSL certificate should be installed
+	installCert, _ := cmd.Flags().GetBool("cert")
+	if installCert {
+		email, _ := cmd.Flags().GetString("email")
+		staging, _ := cmd.Flags().GetBool("staging")
+
+		// Check for email in config if not provided
+		if email == "" {
+			email = viper.GetString("certbot.email")
+		}
+
+		// Check if certbot is installed
+		if err := certbot.CheckInstalled(); err != nil {
+			fmt.Printf("\nWarning: Cannot install SSL certificate: %v\n", err)
+			fmt.Println("Virtual host created successfully, but SSL certificate was not installed.")
+			fmt.Printf("You can install it later with: vhost-manager cert install %s\n", domain)
+			return nil
+		}
+
+		fmt.Println("\nInstalling SSL certificate...")
+
+		certbotMgr, err := certbot.NewManager(email, staging, false)
+		if err != nil {
+			fmt.Printf("Warning: Failed to initialize certbot: %v\n", err)
+			fmt.Printf("You can install SSL later with: vhost-manager cert install %s\n", domain)
+			return nil
+		}
+
+		// Install certificate
+		if err := certbotMgr.InstallCertificate(domain, true); err != nil {
+			fmt.Printf("Warning: Failed to install certificate: %v\n", err)
+			fmt.Printf("You can try again with: vhost-manager cert install %s\n", domain)
+			return nil
+		}
+
+		// Update nginx configuration to enable SSL
+		fmt.Println("Updating nginx configuration to enable SSL...")
+		if err := manager.EnableSSL(domain); err != nil {
+			fmt.Printf("Warning: Failed to enable SSL in nginx configuration: %v\n", err)
+			return nil
+		}
+
+		// Test nginx configuration again
+		if err := manager.TestConfiguration(); err != nil {
+			fmt.Printf("Warning: nginx configuration test failed after enabling SSL: %v\n", err)
+			fmt.Println("Configuration backup available at: " + manager.GetConfigPath(domain) + ".backup")
+			return nil
+		}
+
+		// Reload nginx
+		fmt.Println("Reloading nginx...")
+		if err := manager.ReloadNginx(); err != nil {
+			fmt.Printf("Warning: failed to reload nginx: %v\n", err)
+			fmt.Println("Please reload nginx manually with: sudo systemctl reload nginx")
+		} else {
+			fmt.Println("✓ nginx reloaded successfully")
+		}
+
+		fmt.Printf("\n✓ Virtual host created with SSL certificate for %s\n", domain)
+		fmt.Printf("Your site is now available at https://%s\n", domain)
 	} else {
-		fmt.Println("nginx configuration test passed")
 		fmt.Println("Run 'sudo systemctl reload nginx' to apply changes")
+		fmt.Printf("To add SSL certificate later, run: vhost-manager cert install %s\n", domain)
 	}
 
 	return nil
